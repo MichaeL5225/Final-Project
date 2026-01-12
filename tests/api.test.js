@@ -99,11 +99,12 @@ describe('Required endpoints - success cases', () => {
         expect(res.data).toHaveProperty('sum');
     });
 
+    // Render free-tier can take >30s to wake up. Give this test a longer timeout.
     test('GET /api/logs returns logs list', async () => {
         const res = await axios.get(`${LOGS}/api/logs`);
         expect(res.status).toBe(200);
         expect(Array.isArray(res.data)).toBe(true);
-    });
+    }, 90000);
 });
 
 describe('Required error format {id, message}', () => {
