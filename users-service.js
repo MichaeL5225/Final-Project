@@ -1,104 +1,236 @@
-require('dotenv').config();
+require('dotenv').config(); // Load environment variables from .env
 
-// Import required packages
-const express = require('express');
-const mongoose = require('mongoose');
+const express = require('express'); // Express framework
+const mongoose = require('mongoose'); // MongoDB ODM
+const pino = require('pino'); // Pino logger
 
-// Import Mongoose models
+// Mongoose models
 const User = require('./models/user');
 const Cost = require('./models/cost');
-// Initialize logging with Pino
-const pino = require('pino');
-const Log = require('./models/log');
-const logger = pino();
+const Log = require('./models/log'); // Flexible log schema (strict:false)
 
-const app = express();
+const app = express(); // Create Express app
+const logger = pino(); // Initialize Pino logger
 
+// Parse JSON request bodies
 app.use(express.json());
+
+// Read Mongo connection string from environment
 const MONGO_URI = process.env.MONGO_URI;
-// Connecting to MongoDB
-mongoose.connect(MONGO_URI).then(() =>{
-    console.log("MongoDB Connected(Users Service)");
-})
-.catch((error) =>{
-    console.log("Failed to connect to MongoDB (Users Service)", error);
-});
-//log for every incoming request
+
+// Validate required env var
+if (!MONGO_URI)
+{
+    console.log("Missing MONGO_URI in .env");
+    process.exit(1);
+}
+
+// Connect to MongoDB
+mongoose.connect(MONGO_URI)
+    .then(() => {
+        console.log("MongoDB Connected (Users Service)");
+    })
+    .catch((error) => {
+        console.log("Failed to connect to MongoDB (Users Service)", error);
+    });
+
+/*
+ * Logging middleware
+ * ------------------
+ * Requirement: Save a log for every HTTP request the server receives.
+ */
 app.use(async (req, res, next) => {
-    try {
+    try
+    {
         logger.info(`request received: ${req.method} ${req.url}`);
 
         const newLog = new Log({
             level: 'info',
             message: `Request received: ${req.method} ${req.url} (Users Service)`
         });
-        //Save log to DB without blocking the response
-        newLog.save().catch(err => logger.error("Failed to save log to DB", err));
-    } catch(error) {
+
+        // Save log without blocking the response
+        newLog.save().catch((err) => logger.error("Failed to save log to DB", err));
+    }
+    catch (error)
+    {
         logger.error("Error inside logging middleware", error);
     }
+
     next();
 });
-//Create a new user
+
+/*
+ * POST /api/add
+ * -------------
+ * Adds a new user.
+ * Requirement: validate input and return errors as JSON with {id, message}.
+ */
 app.post('/api/add', async (req, res) => {
-    try {
-        const {id, first_name, last_name, birthday} = req.body;
+    try
+    {
+        // Additional log for endpoint access (in addition to request-level log)
+        const endpointLog = new Log({
+            level: 'info',
+            message: "Endpoint accessed: POST /api/add (Users Service)"
+        });
+        endpointLog.save().catch((err) => logger.error("Failed to save endpoint log to DB", err));
+
+        const { id, first_name, last_name, birthday } = req.body;
+
+        // Validate required fields
+        if (id === undefined || !first_name || !last_name || !birthday)
+        {
+            return res.status(400).json({
+                id: id || 0,
+                message: "Missing parameters: id, first_name, last_name, birthday are required"
+            });
+        }
+
+        // Validate id is a number
+        if (typeof id !== 'number' || Number.isNaN(id))
+        {
+            return res.status(400).json({
+                id: 0,
+                message: "Invalid id: must be a Number"
+            });
+        }
+
+        // Validate birthday is a valid date
+        const birthdayDate = new Date(birthday);
+        if (Number.isNaN(birthdayDate.getTime()))
+        {
+            return res.status(400).json({
+                id: id,
+                message: "Invalid birthday: must be a valid date"
+            });
+        }
+
+        // Create user document
         const newUser = new User({
             id,
             first_name,
             last_name,
-            birthday
+            birthday: birthdayDate
         });
+
         // Save to database
         const savedUser = await newUser.save();
-        res.status(201).json(savedUser);
-    } catch(error){
-        console.log("error in creating new user", error);
-        res.status(500).json({message:"Error adding user",error:error.message});
+
+        // Return the user document itself (same properties as users collection)
+        return res.status(201).json(savedUser);
+    }
+    catch (error)
+    {
+        console.log("Error creating new user", error);
+
+        // Error response must include at least: id + message
+        return res.status(500).json({
+            id: (req.body && req.body.id) ? req.body.id : 0,
+            message: "Error adding user",
+            error: error.message
+        });
     }
 });
-//Get user details including total costs
-app.get('/api/users/:id', async (req, res) => {
-    try {
-        const userID = parseInt(req.params.id);
-        // find the user
-        const user = await User.findOne({ id: userID });
 
-        if(!user){
-            return res.status(404).json({message: "User not found", id : userID});
+/*
+ * GET /api/users/:id
+ * ------------------
+ * Returns: first_name, last_name, id, total (sum of all costs for this user).
+ */
+app.get('/api/users/:id', async (req, res) => {
+    try
+    {
+        // Additional log for endpoint access (in addition to request-level log)
+        const endpointLog = new Log({
+            level: 'info',
+            message: "Endpoint accessed: GET /api/users/:id (Users Service)"
+        });
+        endpointLog.save().catch((err) => logger.error("Failed to save endpoint log to DB", err));
+
+        const userID = parseInt(req.params.id, 10);
+        if (!userID)
+        {
+            return res.status(400).json({
+                id: 0,
+                message: "Invalid id in URL"
+            });
         }
-        // calculate total costs for this user
-        const totalCosts = await Cost.aggregate([
-            {$match: {userid: userID}},
-            {$group: {_id: null, total: {$sum: "$sum"}}}
-        ]);
-        // extract total if user has no costs default to 0
-        const total = totalCosts.length > 0 ? totalCosts[0].total : 0;
-        //Return combined data
-        res.json({
+
+        // Find the user
+        const user = await User.findOne({ id: userID });
+        if (!user)
+        {
+            return res.status(404).json({ id: userID, message: "User not found" });
+        }
+
+        // Sum all user costs in JS (safe with Decimal128)
+        const userCosts = await Cost.find({ userid: userID });
+
+        let total = 0;
+        for (const c of userCosts)
+        {
+            // Decimal128 -> string -> number
+            const value = c.sum ? parseFloat(c.sum.toString()) : 0;
+            total += value;
+        }
+
+        // Return the required JSON format
+        return res.json({
             first_name: user.first_name,
             last_name: user.last_name,
             id: user.id,
             total: total
         });
-
-    } catch(error) {
-        console.log("error getting user details", error);
-        res.status(500).json({message:"Error getting user details", error: error.message});
     }
-});
-//Get all users
-app.get('/api/users', async (req,res) => {
-    try {
-        const users = await User.find ({});
-        res.json(users);
-    } catch (error) {
-        console.log("error fetching users", error);
-        res.status(500).json({message:"Error fetching users", error: error.message});
+    catch (error)
+    {
+        console.log("Error getting user details", error);
+
+        // Error response must include at least: id + message
+        return res.status(500).json({
+            id: req.params && req.params.id ? parseInt(req.params.id, 10) : 0,
+            message: "Error getting user details",
+            error: error.message
+        });
     }
 });
 
+/*
+ * GET /api/users
+ * -------------
+ * Returns a list of all users.
+ */
+app.get('/api/users', async (req, res) => {
+    try
+    {
+        // Additional log for endpoint access (in addition to request-level log)
+        const endpointLog = new Log({
+            level: 'info',
+            message: "Endpoint accessed: GET /api/users (Users Service)"
+        });
+        endpointLog.save().catch((err) => logger.error("Failed to save endpoint log to DB", err));
+
+        const users = await User.find({});
+        return res.json(users);
+    }
+    catch (error)
+    {
+        console.log("Error fetching users", error);
+
+        // Error response must include at least: id + message
+        return res.status(500).json({
+            id: 0,
+            message: "Error fetching users",
+            error: error.message
+        });
+    }
+});
+
+// Server port (Render/production can set PORT in environment)
 const PORT = process.env.PORT || 3000;
+
+// Start server
 app.listen(PORT, () => {
     console.log(`Users Service is running on port ${PORT}`);
 });
