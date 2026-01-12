@@ -35,9 +35,9 @@ const CostSchema = new Schema(
             required: true
         },
 
-        //  Sum stored as Decimal128 ("Double") - getter makes JSON readable
+        //  In MongoDB ,Mongoose "Number" is stored as double
         sum: {
-            type: mongoose.Schema.Types.Decimal128,
+            type: Number,
             required: true, get: decimalToString
         },
 

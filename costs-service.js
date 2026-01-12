@@ -110,7 +110,7 @@ app.post('/api/add', async (req, res) => {
             });
         }
 
-        // Validate sum is numeric (Decimal128 will accept string, but we validate it first)
+        // Validate sum is numeric (we store it as Number)
         const sumAsNumber = Number(sum);
         if (Number.isNaN(sumAsNumber))
         {
@@ -146,18 +146,18 @@ app.post('/api/add', async (req, res) => {
             return res.status(404).json({ id: userid, message: "User not found" });
         }
 
-        // Create cost document (store sum as Decimal128 by passing it as string)
+        // Create cost document (sum is stored as Number -> BSON Double)
         const newCost = new Cost({
             description,
             category,
             userid,
-            sum: sumAsNumber.toString(),
+            sum: sumAsNumber,
             created_at: createdDate
         });
 
         const savedCost = await newCost.save();
 
-        // Response must be the cost item itself (same properties as in costs collection)
+        // IMPORTANT: Return the cost item itself (NOT wrapped in {savedCost: ...})
         return res.status(201).json(savedCost);
     }
     catch (error)
@@ -257,7 +257,7 @@ app.get('/api/report', async (req, res) => {
             const categoryCosts = costs
                 .filter((c) => c.category === cat)
                 .map((c) => ({
-                    sum: c.sum ? parseFloat(c.sum.toString()) : 0,
+                    sum: c.sum, // Number (BSON Double)
                     description: c.description,
                     day: c.created_at.getDate()
                 }));
