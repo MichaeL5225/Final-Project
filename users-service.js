@@ -164,15 +164,13 @@ app.get('/api/users/:id', async (req, res) => {
             return res.status(404).json({ id: userID, message: "User not found" });
         }
 
-        // Sum all user costs in JS (safe with Decimal128)
+        // Sum all user costs in JS (sum is stored as Number)
         const userCosts = await Cost.find({ userid: userID });
 
         let total = 0;
         for (const c of userCosts)
         {
-            // Decimal128 -> string -> number
-            const value = c.sum ? parseFloat(c.sum.toString()) : 0;
-            total += value;
+            total += Number(c.sum) || 0;
         }
 
         // Return the required JSON format
